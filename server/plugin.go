@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	df "github.com/leboncoin/dialogflow-go-webhook"
 	"github.com/mattermost/mattermost-server/v5/model"
 	"github.com/mattermost/mattermost-server/v5/plugin"
 )
@@ -24,6 +23,55 @@ type Plugin struct {
 	configuration *configuration
 }
 
+func getResponseWithText(s string) *OutgoingResponse {
+	return &OutgoingResponse{
+		Prompt: &gPrompt{
+			Override: false,
+			LastSimple: &gSimple{
+				Speech: &s,
+				Text:   s,
+			},
+		},
+	}
+}
+
+func (p *Plugin) handleSendDM(myUid, targetUsername, message string) (*OutgoingResponse, error) {
+	ou, err := p.API.GetUserByUsername(targetUsername)
+	if err != nil {
+		p.API.LogError("Cannot get other user", "err", err.Error())
+		return nil, err
+	}
+	dc, err := p.API.GetDirectChannel(myUid, ou.Id)
+	if err != nil {
+		p.API.LogError("Cannot create dm channel", "err", err.Error())
+		return nil, err
+	}
+	_, err = p.API.CreatePost(&model.Post{
+		ChannelId: dc.Id,
+		UserId:    myUid,
+		Message:   message,
+	})
+	if err != nil {
+		p.API.LogError("Cannot create post", "err", err.Error())
+		return nil, err
+	}
+	return getResponseWithText("Message sent!"), nil
+}
+
+func (p *Plugin) handleStatusChange(newStatus, uid string) (*OutgoingResponse, error) {
+	oldStatus, err := p.API.GetUserStatus(uid)
+	if err != nil {
+		p.API.LogError("Cannot get status decode", "err", err.Error())
+		return nil, err
+	}
+	_, err = p.API.UpdateUserStatus(uid, newStatus)
+	if err != nil {
+		p.API.LogError("Cannot update status", "err", err.Error())
+		return nil, err
+	}
+	return getResponseWithText(fmt.Sprintf("Changing status from %s to %s", oldStatus.Status, newStatus)), nil
+}
+
 // ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -31,37 +79,45 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		return
 	}
 	defer r.Body.Close()
-	var dfr df.Request
+	var dfr IncomingRequest
 	if err := json.NewDecoder(r.Body).Decode(&dfr); err != nil {
+		p.API.LogError("Cannot decode", "err", err.Error())
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	fmt.Printf("%+v\n", dfr)
-	// Filter on action, using a switch for example
 
-	// Retrieve the params of the request
+	email := "email"
+	idB, err := p.API.KVGet(email)
+	if idB == nil || err != nil {
+		p.API.LogError("Cannot get user by email", "email", email)
 
-	if err := dfr.GetParams(&p); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	// Retrieve a specific context
-	if err := dfr.GetContext("my-awesome-context", &p); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	// Do things with the context you just retrieved
-	dff := &df.Fulfillment{
-		FulfillmentMessages: df.Messages{
-			df.ForGoogle(df.SingleSimpleResponse("hello", "hello")),
-			{RichMessage: df.Text{Text: []string{"hello"}}},
-		},
+	intent := dfr.Intent.Name
+	var response *OutgoingResponse
+	if *intent == "change_status" {
+		var nErr error
+		response, nErr = p.handleStatusChange(*dfr.Intent.Params.Status.Resolved, string(idB))
+		if nErr != nil {
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
+		}
+	} else if *intent == "send_dm" {
+		var nErr error
+		response, nErr = p.handleSendDM(string(idB), *dfr.Intent.Params.OtherUser.Resolved, *dfr.Intent.Params.Message.Resolved)
+		if nErr != nil {
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
+		}
+	} else {
+		response = getResponseWithText("Sorry, don't know what to do!")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(dff)
+	json.NewEncoder(w).Encode(response)
 
 }
 
@@ -79,37 +135,51 @@ func getAutocompleteData() *model.AutocompleteData {
 
 	return command
 }
-
+func (p *Plugin) emailFromUserId(userId string) string {
+	keys, _ := p.API.KVList(0, 100)
+	for _, key := range keys {
+		if v, _ := p.API.KVGet(key); v != nil && string(v) == userId {
+			return key
+		}
+	}
+	return ""
+}
+func (p *Plugin) returnHelp() (*model.CommandResponse, *model.AppError) {
+	return &model.CommandResponse{
+		ResponseType: model.COMMAND_RESPONSE_TYPE_EPHEMERAL,
+		Text:         "Only connect/disconnect commands are supported!",
+	}, nil
+}
 func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	parts := strings.Fields(args.Command)
 	trigger := strings.TrimPrefix(parts[0], "/")
 	if trigger == "assistant" {
+		if len(parts) < 2 {
+			return p.returnHelp()
+		}
 		if parts[1] == "connect" {
-			if len(parts) != 4 {
+			if len(parts) != 3 {
 				return &model.CommandResponse{
 					ResponseType: model.COMMAND_RESPONSE_TYPE_EPHEMERAL,
-					Text:         "Syntax: /assistant connect you@gmail.com mm_personal_token",
+					Text:         "Syntax: /assistant connect you@gmail.com",
 				}, nil
 			}
 
 			email := parts[2]
-			token := parts[3]
-			v, _ := json.Marshal(map[string]string{"email": email, "token": token})
-			p.API.KVSetWithOptions(args.UserId, v, model.PluginKVSetOptions{})
+			p.API.KVCompareAndSet(email, []byte(args.UserId), []byte(args.UserId))
 			return &model.CommandResponse{
 				ResponseType: model.COMMAND_RESPONSE_TYPE_EPHEMERAL,
 				Text:         "Connected!",
 			}, nil
 		} else if parts[1] == "disconnect" {
+			p.API.KVDelete(p.emailFromUserId(args.UserId))
+
 			return &model.CommandResponse{
 				ResponseType: model.COMMAND_RESPONSE_TYPE_EPHEMERAL,
 				Text:         "Disconnected!",
 			}, nil
 		} else {
-			return &model.CommandResponse{
-				ResponseType: model.COMMAND_RESPONSE_TYPE_EPHEMERAL,
-				Text:         "Only connect/disconnect commands are supported!",
-			}, nil
+			return p.returnHelp()
 		}
 
 	}
