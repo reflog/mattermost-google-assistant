@@ -3,6 +3,7 @@ module github.com/reflog/mattermost-google-assistant
 go 1.12
 
 require (
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/kr/text v0.2.0 // indirect
 	github.com/leboncoin/dialogflow-go-webhook v1.1.0
 	github.com/mattermost/mattermost-server/v5 v5.26.2

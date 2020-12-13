@@ -24,6 +24,7 @@ type gIntentParams struct {
 	Status    *gIntentTimeParameterValue `json:"status,omitempty"`
 	Message   *gIntentTimeParameterValue `json:"message,omitempty"`
 	OtherUser *gIntentTimeParameterValue `json:"other_user,omitempty"`
+	Username  *gIntentTimeParameterValue `json:"username,omitempty"`
 }
 
 type gIntentParameterValue struct {
@@ -46,7 +47,9 @@ type gScene struct {
 // Need to be validated. Leaving with fake "name" property for now.
 // Details: https://developers.google.com/assistant/conversational/reference/rest/v1/TopLevel/fulfill#Scene
 type gSlot struct {
-	Name *string `json:"name,omitempty"`
+	Username *struct {
+		Value string `json:"value,omitempty"`
+	} `json:"username,omitempty"`
 }
 
 // Need to be validated. Leaving with fake "name" property for now.
@@ -87,7 +90,7 @@ type gUser struct {
 // Need to be validated. Leaving with fake "name" property for now.
 // Details https://developers.google.com/assistant/conversational/reference/rest/v1/TopLevel/fulfill#User
 type gUserParams struct {
-	Name *string `json:"name,omitempty"`
+	UserName *string `json:"username,omitempty"`
 }
 type gUserEngagement struct {
 	PushNotificationIntents *string `json:"pushNotificationIntents,omitempty"` // Need to be Updated. https://developers.google.com/assistant/conversational/reference/rest/v1/TopLevel/fulfill#Engagement
